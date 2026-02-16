@@ -1,121 +1,359 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:panse_app/api.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final bool autoLoad;
 
-  // This widget is the root of your application.
+  const MyApp({super.key, this.autoLoad = true});
+
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+    return MaterialApp(home: Homescreen(autoLoad: autoLoad));
+  }
+}
+
+class Homescreen extends StatefulWidget {
+  final bool autoLoad;
+
+  const Homescreen({super.key, this.autoLoad = true});
+
+  @override
+  State<Homescreen> createState() => _HomescreenState();
+}
+
+class _HomescreenState extends State<Homescreen> {
+  static const String _favoritesKey = 'favorites_quotes';
+  static const String _lastQuoteKey = 'last_quote';
+
+  int index = 0;
+  bool isLoading = false;
+  List<Quote> quotes = [];
+  List<Quote> favs = [];
+  Quote? lastQuote;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeData();
+  }
+
+  Future<void> _initializeData() async {
+    await _restoreLocalData();
+    if (widget.autoLoad) {
+      await loadQuotes();
+    }
+  }
+
+  Future<void> _restoreLocalData() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final storedFavs = prefs.getStringList(_favoritesKey) ?? const [];
+    final restoredFavs = storedFavs
+        .map(_decodeQuote)
+        .whereType<Quote>()
+        .toList();
+
+    final restoredLast = _decodeQuote(prefs.getString(_lastQuoteKey));
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      favs = restoredFavs;
+      lastQuote = restoredLast;
+    });
+  }
+
+  Future<void> _persistFavorites() async {
+    final prefs = await SharedPreferences.getInstance();
+    final payload = favs.map(_encodeQuote).toList();
+    await prefs.setStringList(_favoritesKey, payload);
+  }
+
+  Future<void> _persistLastQuote(Quote? quote) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (quote == null) {
+      await prefs.remove(_lastQuoteKey);
+      return;
+    }
+
+    await prefs.setString(_lastQuoteKey, _encodeQuote(quote));
+  }
+
+  String _encodeQuote(Quote quote) {
+    return jsonEncode({'text': quote.text, 'author': quote.author});
+  }
+
+  Quote? _decodeQuote(String? raw) {
+    if (raw == null || raw.isEmpty) {
+      return null;
+    }
+
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) {
+        return null;
+      }
+
+      final normalized = decoded.map(
+        (key, value) => MapEntry(key.toString(), value),
+      );
+
+      final text = (normalized['text'] as String?)?.trim() ?? '';
+      final author = (normalized['author'] as String?)?.trim() ?? 'Unknown';
+
+      if (text.isEmpty) {
+        return null;
+      }
+
+      return Quote(
+        text: text,
+        author: author.isEmpty ? 'Unknown' : author,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> loadQuotes() async {
+    setState(() => isLoading = true);
+
+    try {
+      final data = await Api.fetch5Quotes();
+      if (!mounted) {
+        return;
+      }
+
+      Quote? newest;
+      if (data.isNotEmpty) {
+        newest = data.first;
+      }
+
+      setState(() {
+        quotes = data;
+        if (newest != null) {
+          lastQuote = newest;
+        }
+        isLoading = false;
+      });
+
+      if (newest != null) {
+        _persistLastQuote(newest);
+      }
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        quotes = [];
+        isLoading = false;
+      });
+
+      final messenger = ScaffoldMessenger.of(context);
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(content: Text('Erreur de chargement: $e')),
+        );
+    }
+  }
+
+  void addFav(Quote q) {
+    final exist = favs.any((x) => x.text == q.text);
+    if (!exist) {
+      setState(() {
+        favs.add(q);
+        lastQuote = q;
+      });
+      _persistFavorites();
+      _persistLastQuote(q);
+    }
+  }
+
+  void removeFav(Quote q) {
+    setState(() => favs.removeWhere((x) => x.text == q.text));
+    _persistFavorites();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pages = [
+      HomePage(
+        quotes: quotes,
+        lastQuote: lastQuote,
+        isLoading: isLoading,
+        onLike: addFav,
+        onReload: loadQuotes,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      FavoritesPage(favs: favs, onRemove: removeFav),
+      const AboutPage(),
+    ];
+
+    return Scaffold(
+      appBar: AppBar(backgroundColor: Colors.green, title: const Text('Panse')),
+      body: pages[index],
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: index,
+        onTap: (i) => setState(() => index = i),
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.favorite),
+            label: 'Favorites',
+          ),
+          BottomNavigationBarItem(icon: Icon(Icons.info), label: 'About'),
+        ],
+      ),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
+class HomePage extends StatelessWidget {
+  final List<Quote> quotes;
+  final Quote? lastQuote;
+  final bool isLoading;
+  final void Function(Quote) onLike;
+  final Future<void> Function() onReload;
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
-
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
-  }
+  const HomePage({
+    super.key,
+    required this.quotes,
+    required this.lastQuote,
+    required this.isLoading,
+    required this.onLike,
+    required this.onReload,
+  });
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
-          children: [
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-          ],
+    if (isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (quotes.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (lastQuote != null) ...[
+                _LastQuoteCard(quote: lastQuote!),
+                const SizedBox(height: 12),
+              ],
+              const Text('Aucune citation disponible.'),
+              const SizedBox(height: 12),
+              ElevatedButton(
+                onPressed: onReload,
+                child: const Text('Chaje quotes'),
+              ),
+            ],
+          ),
         ),
+      );
+    }
+
+    return ListView(
+      children: [
+        if (lastQuote != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 10, 10, 4),
+            child: _LastQuoteCard(quote: lastQuote!),
+          ),
+        for (final q in quotes)
+          Card(
+            margin: const EdgeInsets.all(10),
+            child: ListTile(
+              title: Text(q.text),
+              subtitle: Text(q.author),
+              trailing: IconButton(
+                icon: const Icon(Icons.favorite),
+                onPressed: () => onLike(q),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _LastQuoteCard extends StatelessWidget {
+  final Quote quote;
+
+  const _LastQuoteCard({required this.quote});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: Colors.green.shade50,
+      child: ListTile(
+        title: Text('Derniere citation'),
+        subtitle: Text('"${quote.text}"\n- ${quote.author}'),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
+    );
+  }
+}
+
+class FavoritesPage extends StatelessWidget {
+  final List<Quote> favs;
+  final void Function(Quote) onRemove;
+
+  const FavoritesPage({super.key, required this.favs, required this.onRemove});
+
+  @override
+  Widget build(BuildContext context) {
+    if (favs.isEmpty) {
+      return const Center(child: Text('Favorites vid'));
+    }
+
+    return ListView.builder(
+      itemCount: favs.length,
+      itemBuilder: (context, i) {
+        final q = favs[i];
+        return Card(
+          margin: const EdgeInsets.all(10),
+          child: ListTile(
+            title: Text(q.text),
+            subtitle: Text(q.author),
+            trailing: IconButton(
+              icon: const Icon(Icons.delete),
+              onPressed: () => onRemove(q),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class AboutPage extends StatelessWidget {
+  const AboutPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(16),
+        child: Text(
+          '''Panse se yon aplikasyon motivasyon.
+
+Kreyate:
+- Kensly EUGENE
+- Rodjensky PITON
+- Alisha CHERY
+
+Kontak:
+info@panse.ht''',
+          textAlign: TextAlign.center,
+        ),
       ),
     );
   }
