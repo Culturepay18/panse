@@ -3,9 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:panse_app/api.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-void main() {
-  runApp(const MyApp());
-}
+void main() => runApp(const MyApp());
 
 class MyApp extends StatelessWidget {
   final bool autoLoad;
@@ -14,7 +12,10 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(home: Homescreen(autoLoad: autoLoad));
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: Homescreen(autoLoad: autoLoad),
+    );
   }
 }
 
@@ -40,14 +41,11 @@ class _HomescreenState extends State<Homescreen> {
   @override
   void initState() {
     super.initState();
-    _initializeData();
-  }
-
-  Future<void> _initializeData() async {
-    await _restoreLocalData();
-    if (widget.autoLoad) {
-      await loadQuotes();
-    }
+    _restoreLocalData().then((_) {
+      if (widget.autoLoad) {
+        loadQuotes();
+      }
+    });
   }
 
   Future<void> _restoreLocalData() async {
@@ -71,11 +69,8 @@ class _HomescreenState extends State<Homescreen> {
     });
   }
 
-  Future<void> _persistFavorites() async {
-    final prefs = await SharedPreferences.getInstance();
-    final payload = favs.map(_encodeQuote).toList();
-    await prefs.setStringList(_favoritesKey, payload);
-  }
+  Future<void> _persistFavorites() async => (await SharedPreferences.getInstance())
+      .setStringList(_favoritesKey, favs.map(_encodeQuote).toList());
 
   Future<void> _persistLastQuote(Quote? quote) async {
     final prefs = await SharedPreferences.getInstance();
@@ -83,39 +78,26 @@ class _HomescreenState extends State<Homescreen> {
       await prefs.remove(_lastQuoteKey);
       return;
     }
-
     await prefs.setString(_lastQuoteKey, _encodeQuote(quote));
   }
 
-  String _encodeQuote(Quote quote) {
-    return jsonEncode({'text': quote.text, 'author': quote.author});
-  }
+  String _encodeQuote(Quote quote) =>
+      jsonEncode({'text': quote.text, 'author': quote.author});
 
   Quote? _decodeQuote(String? raw) {
-    if (raw == null || raw.isEmpty) {
-      return null;
-    }
+    if (raw == null || raw.isEmpty) return null;
 
     try {
       final decoded = jsonDecode(raw);
-      if (decoded is! Map) {
-        return null;
-      }
+      if (decoded is! Map) return null;
 
-      final normalized = decoded.map(
-        (key, value) => MapEntry(key.toString(), value),
-      );
+      final text = decoded['text']?.toString().trim() ?? '';
+      if (text.isEmpty) return null;
 
-      final text = (normalized['text'] as String?)?.trim() ?? '';
-      final author = (normalized['author'] as String?)?.trim() ?? 'Unknown';
-
-      if (text.isEmpty) {
-        return null;
-      }
-
+      final author = decoded['author']?.toString().trim();
       return Quote(
         text: text,
-        author: author.isEmpty ? 'Unknown' : author,
+        author: (author == null || author.isEmpty) ? 'Unknown' : author,
       );
     } catch (_) {
       return null;
@@ -131,22 +113,15 @@ class _HomescreenState extends State<Homescreen> {
         return;
       }
 
-      Quote? newest;
-      if (data.isNotEmpty) {
-        newest = data.first;
-      }
+      final newest = data.isEmpty ? null : data.first;
 
       setState(() {
         quotes = data;
-        if (newest != null) {
-          lastQuote = newest;
-        }
+        if (newest != null) lastQuote = newest;
         isLoading = false;
       });
 
-      if (newest != null) {
-        _persistLastQuote(newest);
-      }
+      if (newest != null) _persistLastQuote(newest);
     } catch (e) {
       if (!mounted) {
         return;
@@ -157,8 +132,7 @@ class _HomescreenState extends State<Homescreen> {
         isLoading = false;
       });
 
-      final messenger = ScaffoldMessenger.of(context);
-      messenger
+      ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(
           SnackBar(content: Text('Erreur de chargement: $e')),
@@ -167,15 +141,13 @@ class _HomescreenState extends State<Homescreen> {
   }
 
   void addFav(Quote q) {
-    final exist = favs.any((x) => x.text == q.text);
-    if (!exist) {
-      setState(() {
-        favs.add(q);
-        lastQuote = q;
-      });
-      _persistFavorites();
-      _persistLastQuote(q);
-    }
+    if (_isFavorite(q)) return;
+    setState(() {
+      favs.add(q);
+      lastQuote = q;
+    });
+    _persistFavorites();
+    _persistLastQuote(q);
   }
 
   void removeFav(Quote q) {
@@ -183,11 +155,14 @@ class _HomescreenState extends State<Homescreen> {
     _persistFavorites();
   }
 
+  bool _isFavorite(Quote q) => favs.any((x) => x.text == q.text);
+
   @override
   Widget build(BuildContext context) {
     final pages = [
       HomePage(
         quotes: quotes,
+        favs: favs,
         lastQuote: lastQuote,
         isLoading: isLoading,
         onLike: addFav,
@@ -218,6 +193,7 @@ class _HomescreenState extends State<Homescreen> {
 
 class HomePage extends StatelessWidget {
   final List<Quote> quotes;
+  final List<Quote> favs;
   final Quote? lastQuote;
   final bool isLoading;
   final void Function(Quote) onLike;
@@ -226,6 +202,7 @@ class HomePage extends StatelessWidget {
   const HomePage({
     super.key,
     required this.quotes,
+    required this.favs,
     required this.lastQuote,
     required this.isLoading,
     required this.onLike,
@@ -275,7 +252,12 @@ class HomePage extends StatelessWidget {
               title: Text(q.text),
               subtitle: Text(q.author),
               trailing: IconButton(
-                icon: const Icon(Icons.favorite),
+                icon: Icon(
+                  Icons.favorite,
+                  color: favs.any((x) => x.text == q.text)
+                      ? Colors.red
+                      : Colors.grey.shade600,
+                ),
                 onPressed: () => onLike(q),
               ),
             ),
@@ -337,22 +319,62 @@ class FavoritesPage extends StatelessWidget {
 class AboutPage extends StatelessWidget {
   const AboutPage({super.key});
 
-  @override
-  Widget build(BuildContext context) {
-    return const Center(
-      child: Padding(
-        padding: EdgeInsets.all(16),
-        child: Text(
-          '''Panse se yon aplikasyon motivasyon.
-
-Kreyate:
+  static const List<String> _images = [
+    'lib/assets/photo1.png.jpeg',
+    'lib/assets/images/photo2.png.jpeg',
+    'lib/assets/images/photo3.png.jpeg',
+  ];
+  static const String _aboutText = '''Kreyate:
 - Kensly EUGENE
 - Rodjensky PITON
 - Alisha CHERY
 
 Kontak:
-info@panse.ht''',
-          textAlign: TextAlign.center,
+info@panse.ht''';
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Panse',
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: Colors.green.shade800,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text('Aplikasyon motivasyon pou ranfose lespri ou chak jou.'),
+            const SizedBox(height: 16),
+            ..._images
+                .map(
+                  (imagePath) => Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Image.asset(
+                      imagePath,
+                      width: double.infinity,
+                      fit: BoxFit.fitWidth,
+                      errorBuilder: (context, error, stackTrace) => const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 32),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.broken_image_outlined),
+                            SizedBox(width: 8),
+                            Text('Image introuvable'),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                )
+                .toList(),
+            const Text(_aboutText),
+          ],
         ),
       ),
     );
