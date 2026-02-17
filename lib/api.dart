@@ -34,7 +34,7 @@ class Quote {
 }
 
 class Api {
-  static const int _defaultLimit = 50;
+  static const int _defaultLimit = 80;
   static const Duration _timeout = Duration(seconds: 8);
   static const String _baseUrl = 'https://dummyjson.com/quotes';
 
